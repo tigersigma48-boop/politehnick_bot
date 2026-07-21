@@ -295,9 +295,8 @@ def score_article(article: Article) -> int:
     return score
 
 
-def is_relevant(article: Article) -> bool:
-    minimum = {1: 5, 2: 6, 3: 7, 4: 8, 5: 8, 6: 10, 7: 1}.get(article.level, 8)
-    return article.score >= minimum
+def is_relevant(article):
+    return True
 
 
 
