@@ -469,16 +469,53 @@ def entry_publication_datetime(entry: Any) -> datetime | None:
     return parsed
 
 
-def fetch_source_sync(source: dict[str, Any]) -> list[Article]:
+def _request_with_retries(url: str, *, timeout: int = HTTP_TIMEOUT) -> requests.Response:
+    """HTTP GET із повторними спробами для тимчасових 429/5xx помилок."""
     headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; PolitehnikMonitor/2.0; +https://t.me/)"
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0 Safari/537.36"
+        ),
+        "Accept": "application/rss+xml, application/atom+xml, text/xml, text/html;q=0.9, */*;q=0.8",
+        "Accept-Language": "uk-UA,uk;q=0.9,en;q=0.7",
+        "Cache-Control": "no-cache",
     }
-    response = requests.get(source["url"], headers=headers, timeout=HTTP_TIMEOUT)
-    response.raise_for_status()
+
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            response = requests.get(
+                url,
+                headers=headers,
+                timeout=timeout,
+                allow_redirects=True,
+            )
+            if response.status_code in {429, 500, 502, 503, 504}:
+                raise requests.HTTPError(
+                    f"{response.status_code} Server Error",
+                    response=response,
+                )
+            response.raise_for_status()
+            return response
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+
+    assert last_error is not None
+    raise last_error
+
+
+def fetch_rss_source_sync(source: dict[str, Any]) -> list[Article]:
+    response = _request_with_retries(source["url"])
     parsed = feedparser.parse(response.content)
 
+    if getattr(parsed, "bozo", False) and not parsed.entries:
+        raise RuntimeError(f"Некоректна RSS-стрічка: {getattr(parsed, 'bozo_exception', '')}")
+
     articles: list[Article] = []
-    for entry in parsed.entries[:25]:
+    for entry in parsed.entries[:40]:
         raw_title = normalize_text(entry.get("title", ""))
         url = entry.get("link", "").strip()
         summary = normalize_text(
@@ -490,25 +527,16 @@ def fetch_source_sync(source: dict[str, Any]) -> list[Article]:
         published_dt = entry_publication_datetime(entry)
         title, google_publisher = _publisher_from_google_title(raw_title)
 
+        # Для прямих RSS не відкриваємо кожну сторінку без потреби.
+        # Перевірка сторінки потрібна лише коли RSS не дав дату.
         real_url = url
         page_date: datetime | None = None
         page_site = ""
-
-        # Google News є лише агрегатором: намагаємося перейти на оригінальну статтю.
-        # Якщо RSS не має точної дати, перевіряємо дату безпосередньо на сторінці.
-        if _is_google_news_url(url) or published_dt is None:
+        if published_dt is None:
             real_url, page_date, page_site = inspect_article_page(url)
 
         effective_date = published_dt or page_date
-
-        # Жорстке правило: у чернетки потрапляють лише матеріали,
-        # опубліковані сьогодні за київським часом.
         if ONLY_TODAY_NEWS and not _is_today_kyiv(effective_date):
-            continue
-
-        # Якщо Google не вдалося розгорнути до оригіналу, не беремо матеріал:
-        # інакше в каналі знову з'явиться news.google.com.
-        if _is_google_news_url(url) and _is_google_news_url(real_url):
             continue
 
         source_name = page_site or google_publisher or source["name"]
@@ -522,7 +550,83 @@ def fetch_source_sync(source: dict[str, Any]) -> list[Article]:
         )
         article.score = score_article(article)
         articles.append(article)
+
     return articles
+
+
+def fetch_html_source_sync(source: dict[str, Any]) -> list[Article]:
+    """Читає сторінки новин сайтів, які не мають стабільного RSS."""
+    response = _request_with_retries(source["url"])
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    base_host = urlparse(response.url).netloc.lower()
+    link_pattern = source.get("link_pattern", "")
+    candidates: list[tuple[str, str]] = []
+    seen_urls: set[str] = set()
+
+    for anchor in soup.find_all("a", href=True):
+        title = normalize_text(anchor.get_text(" ", strip=True))
+        if len(title) < 18:
+            continue
+
+        absolute_url = urljoin(response.url, anchor["href"])
+        parsed_url = urlparse(absolute_url)
+        if parsed_url.scheme not in {"http", "https"}:
+            continue
+        if parsed_url.netloc.lower() != base_host:
+            continue
+        if link_pattern and not re.search(link_pattern, parsed_url.path):
+            continue
+
+        clean_url = absolute_url.split("#", 1)[0]
+        if clean_url in seen_urls:
+            continue
+
+        seen_urls.add(clean_url)
+        candidates.append((title, clean_url))
+        if len(candidates) >= int(source.get("max_items", 20)):
+            break
+
+    articles: list[Article] = []
+    for title, url in candidates:
+        final_url, page_date, page_site = inspect_article_page(url)
+        if ONLY_TODAY_NEWS and not _is_today_kyiv(page_date):
+            continue
+
+        # Короткий опис беремо з meta description самої статті.
+        summary = ""
+        try:
+            article_response = _request_with_retries(final_url)
+            article_soup = BeautifulSoup(article_response.text, "html.parser")
+            description = (
+                article_soup.find("meta", attrs={"property": "og:description"})
+                or article_soup.find("meta", attrs={"name": "description"})
+            )
+            if description and description.get("content"):
+                summary = normalize_text(description["content"])
+        except requests.RequestException:
+            pass
+
+        article = Article(
+            source=page_site or source["name"],
+            level=int(source["level"]),
+            title=title,
+            url=final_url,
+            summary=summary,
+            published=page_date.isoformat() if page_date else "",
+        )
+        article.score = score_article(article)
+        articles.append(article)
+
+    return articles
+
+
+def fetch_source_sync(source: dict[str, Any]) -> list[Article]:
+    source_type = source.get("type", "rss").lower()
+    if source_type == "html":
+        return fetch_html_source_sync(source)
+    return fetch_rss_source_sync(source)
+
 
 async def fetch_source(source: dict[str, Any]) -> list[Article]:
     try:
@@ -755,45 +859,77 @@ async def scan_sources(application: Application, force: bool = False) -> tuple[i
         drafted = 0
         first_boot = get_meta("bootstrapped", "0") != "1"
 
-        source_results = await asyncio.gather(*(fetch_source(source) for source in SOURCES))
+        logger.info("Починаю перевірку %s джерел", len(SOURCES))
+        source_results = await asyncio.gather(
+            *(fetch_source(source) for source in SOURCES)
+        )
+
+        for source, group in zip(SOURCES, source_results):
+            logger.info(
+                "Джерело «%s»: отримано %s актуальних матеріалів",
+                source["name"],
+                len(group),
+            )
+
         articles = [article for group in source_results for article in group]
         articles.sort(key=lambda item: (item.level, -item.score))
+        logger.info("Усього сьогоднішніх матеріалів після фільтра дати: %s", len(articles))
 
         for article in articles:
             if is_seen(article):
                 continue
+
             found += 1
-            mark_seen(article)
 
             if first_boot and BOOTSTRAP_SKIP_EXISTING and not force:
-                continue
-            if not is_relevant(article):
-                continue
-            if drafted >= MAX_DRAFTS_PER_SCAN:
+                mark_seen(article)
                 continue
 
-            post_title, post_text = await prepare_post(article)
-            draft_id = create_draft(article, post_title, post_text)
-            await send_draft_preview(application, draft_id)
-            drafted += 1
+            if not is_relevant(article):
+                # Нерелевантне теж позначаємо, щоб не аналізувати кожні 5 хвилин.
+                mark_seen(article)
+                continue
+
+            if drafted >= MAX_DRAFTS_PER_SCAN:
+                # Не позначаємо, щоб матеріал потрапив у наступний прохід.
+                continue
+
+            try:
+                post_title, post_text = await prepare_post(article)
+                draft_id = create_draft(article, post_title, post_text)
+                await send_draft_preview(application, draft_id)
+                mark_seen(article)
+                drafted += 1
+                logger.info("Створено чернетку №%s: %s", draft_id, article.title)
+            except Exception:
+                logger.exception("Не вдалося створити чернетку: %s", article.title)
 
         if first_boot:
             set_meta("bootstrapped", "1")
         set_meta("last_scan", str(int(time.time())))
+
+        logger.info("Перевірка завершена: нових=%s, чернеток=%s", found, drafted)
         return found, drafted
 
 
 async def monitor_loop(application: Application) -> None:
+    logger.info(
+        "Автоматичний моніторинг активний; перевірка кожні %s секунд",
+        CHECK_INTERVAL_SECONDS,
+    )
     await asyncio.sleep(3)
+
     while True:
         try:
-            if not monitor_paused:
-                found, drafted = await scan_sources(application)
-                logger.info("Перевірка завершена: нових=%s, чернеток=%s", found, drafted)
+            if monitor_paused:
+                logger.info("Моніторинг призупинено")
+            else:
+                await scan_sources(application)
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("Помилка циклу моніторингу")
+
         await asyncio.sleep(CHECK_INTERVAL_SECONDS)
 
 
