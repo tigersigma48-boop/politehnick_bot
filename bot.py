@@ -296,33 +296,37 @@ def score_article(article: Article) -> int:
 
 
 def is_relevant(article: Article) -> bool:
-    """Пропускає лише новини про МОН, університети, коледжі, студентів або Львівську політехніку."""
-    text = canonical_title(f"{article.title} {article.summary}")
+    text = canonical_title(
+        f"{article.source} {article.title} {article.summary}"
+    )
 
     required_keywords = (
-        "мон",
         "міністерство освіти",
         "міністерство освіти і науки",
+        "мон україни",
+
         "університет",
-        "університети",
-        "університету",
-        "університеті",
-        "університетом",
+        "університетськ",
+        "виш",
+        "заклад вищої освіти",
+
         "коледж",
-        "коледжі",
-        "коледжу",
-        "коледжах",
+        "фахова передвища освіта",
+
         "студент",
-        "студенти",
-        "студентів",
-        "студентам",
-        "студентський",
+        "студентськ",
+        "здобувач освіти",
+
         "львівська політехніка",
         "львівської політехніки",
         "львівську політехніку",
+        "політехнік",
     )
 
-    matched_keyword = next((keyword for keyword in required_keywords if keyword in text), None)
+    matched_keyword = next(
+        (keyword for keyword in required_keywords if keyword in text),
+        None,
+    )
 
     logger.info(
         "Фільтр: %s | слово=%s | джерело=%s | заголовок=%s",
