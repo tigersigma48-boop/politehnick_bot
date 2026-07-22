@@ -296,10 +296,7 @@ def score_article(article: Article) -> int:
 
 
 def is_relevant(article: Article) -> bool:
-    """
-    Пропускає лише матеріали, пов’язані з:
-    МОН, університетами, коледжами, студентами або Львівською політехнікою.
-    """
+    """Пропускає лише новини про МОН, університети, коледжі, студентів або Львівську політехніку."""
     text = canonical_title(f"{article.title} {article.summary}")
 
     required_keywords = (
@@ -310,20 +307,32 @@ def is_relevant(article: Article) -> bool:
         "університети",
         "університету",
         "університеті",
+        "університетом",
         "коледж",
         "коледжі",
         "коледжу",
+        "коледжах",
         "студент",
         "студенти",
         "студентів",
         "студентам",
+        "студентський",
         "львівська політехніка",
         "львівської політехніки",
         "львівську політехніку",
     )
 
-    return any(keyword in text for keyword in required_keywords)
+    matched_keyword = next((keyword for keyword in required_keywords if keyword in text), None)
 
+    logger.info(
+        "Фільтр: %s | слово=%s | джерело=%s | заголовок=%s",
+        "ПРОЙШЛА" if matched_keyword else "ВІДХИЛЕНА",
+        matched_keyword or "—",
+        article.source,
+        article.title,
+    )
+
+    return matched_keyword is not None
 
 
 def _datetime_from_struct(value: Any) -> datetime | None:
@@ -577,7 +586,7 @@ def local_prepare_post(article: Article) -> tuple[str, str]:
         summary = summary[len(title):].lstrip(" .:—–-")
 
     sentences = re.split(r"(?<=[.!?])\s+", summary)
-    sentences = [sentence.strip() for sentence in sentences if len(sentence.strip()) >= 25]
+    sentences = [sentence.strip() for sentence in sentences if len(sentence.strip()) >= 20]
     concise = " ".join(sentences[:3]).strip()
 
     if not concise:
@@ -591,19 +600,18 @@ def openai_rewrite_sync(article: Article, mode: str = "normal") -> tuple[str, st
         return local_prepare_post(article)
 
     length_instruction = {
-        "short": "Текст має містити 1–2 короткі речення без вступів і повторів.",
-        "long": "Текст має містити 4–5 змістовних речень без води.",
-        "rewrite": "Перепиши стисло, конкретно і без води, не змінюючи фактів.",
-        "normal": "Текст має містити 2–3 короткі змістовні речення без води.",
+        "short": "Текст має містити 2–3 короткі речення.",
+        "long": "Текст має містити 5–7 змістовних речень.",
+        "rewrite": "Перепиши текст іншим формулюванням, не змінюючи фактів.",
+        "normal": "Текст має містити 3–5 речень.",
     }.get(mode, "Текст має містити 3–5 речень.")
 
     prompt = f"""
 Ти редактор українського Telegram-каналу «{CHANNEL_NAME}» про освіту, науку,
 студентське життя та розвиток університетів.
 
-Підготуй стислу нейтральну новину українською мовою. Пиши конкретно, без вступних фраз,
-канцеляризмів, оцінок, повторів і води. Не вигадуй фактів, дат, цитат, цифр чи посад.
-Перше речення має одразу повідомляти головний факт. {length_instruction}
+Підготуй нейтральну новину українською мовою. Не вигадуй фактів, дат, цитат,
+цифр чи посад. Не роби сенсаційних висновків. {length_instruction}
 Поверни ТІЛЬКИ JSON такого формату:
 {{"title":"...","text":"..."}}
 
@@ -790,47 +798,87 @@ async def scan_sources(application: Application, force: bool = False) -> tuple[i
     async with scan_lock:
         found = 0
         drafted = 0
+        relevant_count = 0
         first_boot = get_meta("bootstrapped", "0") != "1"
 
-        source_results = await asyncio.gather(*(fetch_source(source) for source in SOURCES))
-        articles = [article for group in source_results for article in group]
+        logger.info("Починаю перевірку джерел: кількість=%s, force=%s", len(SOURCES), force)
+
+        source_results = await asyncio.gather(
+            *(fetch_source(source) for source in SOURCES),
+            return_exceptions=True,
+        )
+
+        articles: list[Article] = []
+
+        for index, result in enumerate(source_results):
+            source_name = SOURCES[index].get("name", "Невідоме джерело")
+            if isinstance(result, Exception):
+                logger.error("Помилка джерела «%s»: %s", source_name, result)
+                continue
+
+            logger.info("Джерело «%s»: отримано %s актуальних матеріалів", source_name, len(result))
+            articles.extend(result)
+
+        logger.info("Усього актуальних матеріалів після фільтра дати: %s", len(articles))
         articles.sort(key=lambda item: (item.level, -item.score))
 
         for article in articles:
             if is_seen(article):
                 continue
+
             found += 1
-            mark_seen(article)
 
             if first_boot and BOOTSTRAP_SKIP_EXISTING and not force:
-                continue
-            if not is_relevant(article):
-                continue
-            if drafted >= MAX_DRAFTS_PER_SCAN:
+                mark_seen(article)
                 continue
 
-            post_title, post_text = await prepare_post(article)
-            draft_id = create_draft(article, post_title, post_text)
-            await send_draft_preview(application, draft_id)
-            drafted += 1
+            if not is_relevant(article):
+                mark_seen(article)
+                continue
+
+            relevant_count += 1
+
+            if drafted >= MAX_DRAFTS_PER_SCAN:
+                logger.info("Досягнуто ліміт чернеток (%s). Матеріал залишено непереглянутим: %s", MAX_DRAFTS_PER_SCAN, article.title)
+                continue
+
+            try:
+                post_title, post_text = await prepare_post(article)
+                draft_id = create_draft(article, post_title, post_text)
+                await send_draft_preview(application, draft_id)
+                mark_seen(article)
+                drafted += 1
+                logger.info("Створено чернетку №%s | %s", draft_id, article.title)
+            except TelegramError as exc:
+                logger.exception("Telegram не зміг надіслати чернетку для «%s»: %s", article.title, exc)
+            except Exception:
+                logger.exception("Не вдалося створити чернетку для «%s»", article.title)
 
         if first_boot:
             set_meta("bootstrapped", "1")
+
         set_meta("last_scan", str(int(time.time())))
+        logger.info("Перевірка завершена: нових=%s, релевантних=%s, чернеток=%s", found, relevant_count, drafted)
         return found, drafted
 
 
 async def monitor_loop(application: Application) -> None:
     await asyncio.sleep(3)
+    logger.info("Автоматичний моніторинг активовано, інтервал %s секунд", CHECK_INTERVAL_SECONDS)
+
     while True:
         try:
-            if not monitor_paused:
+            if monitor_paused:
+                logger.info("Автоматичний моніторинг призупинено")
+            else:
                 found, drafted = await scan_sources(application)
-                logger.info("Перевірка завершена: нових=%s, чернеток=%s", found, drafted)
+                logger.info("Автоматична перевірка: нових=%s, чернеток=%s", found, drafted)
         except asyncio.CancelledError:
+            logger.info("Фоновий цикл моніторингу зупинено")
             raise
         except Exception:
             logger.exception("Помилка циклу моніторингу")
+
         await asyncio.sleep(CHECK_INTERVAL_SECONDS)
 
 
@@ -1104,6 +1152,17 @@ def validate_config() -> list[str]:
     return errors
 
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    error = context.error
+    if error and error.__class__.__name__ == "Conflict":
+        logger.error(
+            "Telegram Conflict: цей BOT_TOKEN використовується ще одним запущеним ботом. "
+            "Залиш лише один активний процес — Railway або локальний запуск."
+        )
+        return
+    logger.exception("Необроблена помилка Telegram", exc_info=error)
+
+
 def main() -> None:
     missing = validate_config()
     if missing:
@@ -1123,6 +1182,7 @@ def main() -> None:
     application.add_handler(CommandHandler("pause", pause_command))
     application.add_handler(CommandHandler("resume", resume_command))
     application.add_handler(CommandHandler("testpost", testpost_command))
+    application.add_error_handler(error_handler)
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(
         MessageHandler(
