@@ -1,30 +1,12 @@
-# Прямі джерела без Google News.
-# type="rss" — читаємо RSS/Atom.
-# type="html" — читаємо сторінку новин і відкриваємо сьогоднішні матеріали.
+# Джерела, які у твоїх логах уже віддавали матеріали без помилок 403/404.
+# type="rss" — RSS/Atom; type="html" — сторінка новин.
 
 SOURCES = [
-    # I рівень — Львів і Львівська політехніка
     {
         "name": "Львівська політехніка",
         "level": 1,
         "type": "html",
         "url": "https://lpnu.ua/news",
-        "link_pattern": r"^/news/",
-        "max_items": 25,
-    },
-    {
-        "name": "ZAXID.NET",
-        "level": 1,
-        "type": "rss",
-        "url": "https://zaxid.net/rss/",
-    },
-
-    # II рівень — освіта України
-    {
-        "name": "Міністерство освіти і науки України",
-        "level": 2,
-        "type": "html",
-        "url": "https://mon.gov.ua/timeline?type=posts",
         "link_pattern": r"^/news/",
         "max_items": 25,
     },
@@ -52,34 +34,16 @@ SOURCES = [
         "type": "rss",
         "url": "https://www.ukrinform.ua/rss/block-lastnews",
     },
-
-    # III рівень — світова освіта та наука
-    {
-        "name": "Euronews",
-        "level": 3,
-        "type": "rss",
-        "url": "https://www.euronews.com/rss?level=theme&name=next",
-    },
-    {
-        "name": "Le Monde Education",
-        "level": 3,
-        "type": "rss",
-        "url": "https://www.lemonde.fr/en/education/rss_full.xml",
-    },
-
-    # IV рівень — університети, інновації та суспільство
     {
         "name": "Європейська правда",
-        "level": 4,
+        "level": 3,
         "type": "rss",
         "url": "https://www.eurointegration.com.ua/rss/",
     },
     {
         "name": "Інтерфакс-Україна",
-        "level": 4,
+        "level": 3,
         "type": "rss",
         "url": "https://interfax.com.ua/news/last.rss",
     },
-
-    # V рівень — Telegram додається пересиланням повідомлень боту.
 ]
