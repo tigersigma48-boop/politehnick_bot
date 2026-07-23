@@ -296,95 +296,68 @@ def score_article(article: Article) -> int:
 
 
 def is_relevant(article: Article) -> bool:
-    """Пропускає лише новини про вищу/фахову освіту та Львівську політехніку."""
-    text = canonical_title(f"{article.title} {article.summary}")
+    """Лише новини про Політехніку, університети, коледжі, студентів, вступ і МОН."""
+    text = canonical_title(f"{article.source} {article.title} {article.summary}")
 
-    # Сильні тематичні ознаки. Важливо: МОН шукаємо як окреме слово,
-    # щоб не спрацьовувало на «моніторинг», «моніторинговий» тощо.
-    strong_patterns = (
-        r"мон",
-        r"міністерств[а-яіїєґ]* освіти(?: і науки)?",
-        r"львівськ[а-яіїєґ]* політехнік[а-яіїєґ]*",
-        r"національн[а-яіїєґ]* університет[а-яіїєґ]* львівськ[а-яіїєґ]* політехнік[а-яіїєґ]*",
-        r"університет[а-яіїєґ]*",
-        r"виш(?:і|у|ем|ами|ах)?",
-        r"заклад[а-яіїєґ]* вищ[а-яіїєґ]* освіти",
-        r"зво",
-        r"коледж[а-яіїєґ]*",
-        r"фахов[а-яіїєґ]* передвищ[а-яіїєґ]* освіт[а-яіїєґ]*",
-        r"студент[а-яіїєґ]*",
-        r"аспірант[а-яіїєґ]*",
-        r"абітурієнт[а-яіїєґ]*",
-        r"вступн[а-яіїєґ]* кампані[а-яіїєґ]*",
-        r"приймальн[а-яіїєґ]* комісі[а-яіїєґ]*",
-        r"нмт",
-        r"єві",
-        r"єфвв",
-        r"бакалавр[а-яіїєґ]*",
-        r"магістр[а-яіїєґ]*",
-        r"магістратур[а-яіїєґ]*",
-        r"факультет[а-яіїєґ]*",
-        r"кафедр[а-яіїєґ]*",
-        r"ректор[а-яіїєґ]*",
-        r"проректор[а-яіїєґ]*",
-        r"студентськ[а-яіїєґ]* гуртожит[а-яіїєґ]*",
-        r"академічн[а-яіїєґ]* мобільн[а-яіїєґ]*",
-        r"освітн[а-яіїєґ]* програм[а-яіїєґ]*",
-        r"акредитаці[а-яіїєґ]* освітн[а-яіїєґ]* програм[а-яіїєґ]*",
+    education_patterns = (
+        r"\bмон\b",
+        r"міністерств\w* освіти(?: і науки)?",
+        r"львівськ\w* політехнік\w*",
+        r"\bуніверситет\w*\b",
+        r"\bвиш(?:і|у|ем|ами|ах)?\b",
+        r"заклад\w* вищ\w* освіти",
+        r"\bзво\b",
+        r"\bколедж\w*\b",
+        r"фахов\w* передвищ\w* освіт\w*",
+        r"\bстудент\w*\b",
+        r"\bаспірант\w*\b",
+        r"\babітурієнт\w*\b",
+        r"\bабітурієнт\w*\b",
+        r"вступн\w* кампані\w*",
+        r"приймальн\w* комісі\w*",
+        r"\bнмт\b",
+        r"\bєві\b",
+        r"\bєфвв\b",
+        r"\bбакалавр\w*\b",
+        r"\bмагістр\w*\b",
+        r"\bфакультет\w*\b",
+        r"\bкафедр\w*\b",
+        r"\bректор\w*\b",
+        r"\bпроректор\w*\b",
+        r"гуртожит\w*",
+        r"академічн\w* мобільн\w*",
+        r"освітн\w* програм\w*",
+        r"акредитаці\w*",
+        r"стипенді\w*",
     )
 
-    matched_pattern = next(
-        (pattern for pattern in strong_patterns if re.search(pattern, text, flags=re.IGNORECASE)),
-        None,
-    )
-
-    if not matched_pattern:
+    matched = next((p for p in education_patterns if re.search(p, text, re.IGNORECASE)), None)
+    if not matched:
         logger.info(
-            "Фільтр: ВІДХИЛЕНА | причина=немає освітньої теми | джерело=%s | заголовок=%s",
-            article.source,
-            article.title,
+            "Фільтр: ВІДХИЛЕНА | причина=немає теми вищої освіти | джерело=%s | заголовок=%s",
+            article.source, article.title,
         )
         return False
 
-    # Теми, які майже завжди є сторонніми для каналу. Вони блокуються,
-    # якщо матеріал не згадує Львівську політехніку або конкретну освітню установу/студентів.
+    # Блокуємо сторонні сюжети навіть якщо випадково трапилося слово зі списку.
     blacklist_patterns = (
-        r"нафт[а-яіїєґ]*",
-        r"танкер[а-яіїєґ]*",
-        r"морськ[а-яіїєґ]* експорт",
-        r"експорт[а-яіїєґ]* сир[а-яіїєґ]* нафт[а-яіїєґ]*",
-        r"газов[а-яіїєґ]*",
-        r"бірж[а-яіїєґ]*",
-        r"курс валют",
-        r"криптовалют[а-яіїєґ]*",
-        r"ставк[а-яіїєґ]* на спорт",
-        r"гороскоп[а-яіїєґ]*",
-        r"шоу бізнес",
-        r"світськ[а-яіїєґ]* новин[а-яіїєґ]*",
+        r"\bнафт\w*\b", r"\bтанкер\w*\b", r"морськ\w* експорт",
+        r"\bгаз\w*\b", r"\bбірж\w*\b", r"курс валют", r"криптовалют\w*",
+        r"гороскоп\w*", r"шоу[- ]бізнес", r"ставк\w* на спорт",
     )
-
-    blocked_pattern = next(
-        (pattern for pattern in blacklist_patterns if re.search(pattern, text, flags=re.IGNORECASE)),
-        None,
-    )
-
-    if blocked_pattern:
+    blocked = next((p for p in blacklist_patterns if re.search(p, text, re.IGNORECASE)), None)
+    if blocked and not re.search(r"львівськ\w* політехнік\w*|\bуніверситет\w*\b|\bколедж\w*\b|\bстудент\w*\b", text):
         logger.info(
-            "Фільтр: ВІДХИЛЕНА | причина=стороння тема (%s) | джерело=%s | заголовок=%s",
-            blocked_pattern,
-            article.source,
-            article.title,
+            "Фільтр: ВІДХИЛЕНА | причина=стороння тема | джерело=%s | заголовок=%s",
+            article.source, article.title,
         )
         return False
 
     logger.info(
-        "Фільтр: ПРОЙШЛА | освітня ознака=%s | джерело=%s | заголовок=%s",
-        matched_pattern,
-        article.source,
-        article.title,
+        "Фільтр: ПРОЙШЛА | ознака=%s | джерело=%s | заголовок=%s",
+        matched, article.source, article.title,
     )
     return True
-
 
 def _datetime_from_struct(value: Any) -> datetime | None:
     """Перетворює feedparser time_struct на timezone-aware UTC datetime."""
@@ -554,7 +527,56 @@ def entry_publication_datetime(entry: Any) -> datetime | None:
     return parsed
 
 
+def fetch_html_source_sync(source: dict[str, Any]) -> list[Article]:
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; PolitehnikMonitor/3.0; +https://t.me/)",
+        "Accept-Language": "uk-UA,uk;q=0.9,en;q=0.7",
+    }
+    response = requests.get(source["url"], headers=headers, timeout=HTTP_TIMEOUT)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "html.parser")
+    pattern = re.compile(source.get("link_pattern", r".*"))
+    max_items = int(source.get("max_items", 25))
+
+    links: list[tuple[str, str]] = []
+    seen_urls: set[str] = set()
+    for anchor in soup.find_all("a", href=True):
+        href = anchor.get("href", "").strip()
+        if not pattern.search(href):
+            continue
+        url = urljoin(response.url, href)
+        if url in seen_urls:
+            continue
+        title = normalize_text(anchor.get_text(" ", strip=True))
+        if len(title) < 12:
+            continue
+        seen_urls.add(url)
+        links.append((title, url))
+        if len(links) >= max_items:
+            break
+
+    articles: list[Article] = []
+    for title, url in links:
+        real_url, published_dt, page_site = inspect_article_page(url)
+        if ONLY_TODAY_NEWS and not _is_today_kyiv(published_dt):
+            continue
+        article = Article(
+            source=page_site or source["name"],
+            level=int(source["level"]),
+            title=title,
+            url=real_url,
+            summary="",
+            published=published_dt.isoformat() if published_dt else "",
+        )
+        article.score = score_article(article)
+        articles.append(article)
+    return articles
+
+
 def fetch_source_sync(source: dict[str, Any]) -> list[Article]:
+    if source.get("type", "rss") == "html":
+        return fetch_html_source_sync(source)
+
     headers = {
         "User-Agent": "Mozilla/5.0 (compatible; PolitehnikMonitor/2.0; +https://t.me/)"
     }
