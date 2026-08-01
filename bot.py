@@ -684,18 +684,27 @@ def format_admin_preview(draft: sqlite3.Row) -> str:
 def format_channel_post(draft: sqlite3.Row) -> str:
     source_name = normalize_text(draft["source"]) or "Першоджерело"
     source_url = html.escape(draft["article_url"], quote=True)
-    subscribe = ""
+
+    footer_lines: list[str] = []
+
     if CHANNEL_URL:
-        subscribe = (
-            f'\n\n🎓 <a href="{html.escape(CHANNEL_URL, quote=True)}">'
+        footer_lines.append(
+            f'🎓 <a href="{html.escape(CHANNEL_URL, quote=True)}">'
             f'Приєднатися до «{html.escape(CHANNEL_NAME)}»</a>'
         )
+
+    footer_lines.append(
+        '📨 <a href="https://t.me/politechnicksendnews_bot">'
+        'Надіслати новину</a>'
+    )
+
+    footer = "\n\n" + "\n".join(footer_lines)
 
     return (
         f"<b>{html.escape(draft['post_title'])}</b>\n\n"
         f"{html.escape(draft['post_text'])}\n\n"
         f'🔗 Джерело: <a href="{source_url}">{html.escape(source_name)}</a>'
-        f"{subscribe}"
+        f"{footer}"
     )
 
 def draft_keyboard(draft_id: int) -> InlineKeyboardMarkup:
