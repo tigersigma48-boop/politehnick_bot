@@ -296,68 +296,10 @@ def score_article(article: Article) -> int:
 
 
 def is_relevant(article: Article) -> bool:
-    """Лише новини про Політехніку, університети, коледжі, студентів, вступ і МОН."""
-    text = canonical_title(f"{article.source} {article.title} {article.summary}")
+    minimum = {1: 5, 2: 6, 3: 7, 4: 8, 5: 8, 6: 10, 7: 1}.get(article.level, 8)
+    return article.score >= minimum
 
-    education_patterns = (
-        r"\bмон\b",
-        r"міністерств\w* освіти(?: і науки)?",
-        r"львівськ\w* політехнік\w*",
-        r"\bуніверситет\w*\b",
-        r"\bвиш(?:і|у|ем|ами|ах)?\b",
-        r"заклад\w* вищ\w* освіти",
-        r"\bзво\b",
-        r"\bколедж\w*\b",
-        r"фахов\w* передвищ\w* освіт\w*",
-        r"\bстудент\w*\b",
-        r"\bаспірант\w*\b",
-        r"\babітурієнт\w*\b",
-        r"\bабітурієнт\w*\b",
-        r"вступн\w* кампані\w*",
-        r"приймальн\w* комісі\w*",
-        r"\bнмт\b",
-        r"\bєві\b",
-        r"\bєфвв\b",
-        r"\bбакалавр\w*\b",
-        r"\bмагістр\w*\b",
-        r"\bфакультет\w*\b",
-        r"\bкафедр\w*\b",
-        r"\bректор\w*\b",
-        r"\bпроректор\w*\b",
-        r"гуртожит\w*",
-        r"академічн\w* мобільн\w*",
-        r"освітн\w* програм\w*",
-        r"акредитаці\w*",
-        r"стипенді\w*",
-    )
 
-    matched = next((p for p in education_patterns if re.search(p, text, re.IGNORECASE)), None)
-    if not matched:
-        logger.info(
-            "Фільтр: ВІДХИЛЕНА | причина=немає теми вищої освіти | джерело=%s | заголовок=%s",
-            article.source, article.title,
-        )
-        return False
-
-    # Блокуємо сторонні сюжети навіть якщо випадково трапилося слово зі списку.
-    blacklist_patterns = (
-        r"\bнафт\w*\b", r"\bтанкер\w*\b", r"морськ\w* експорт",
-        r"\bгаз\w*\b", r"\bбірж\w*\b", r"курс валют", r"криптовалют\w*",
-        r"гороскоп\w*", r"шоу[- ]бізнес", r"ставк\w* на спорт",
-    )
-    blocked = next((p for p in blacklist_patterns if re.search(p, text, re.IGNORECASE)), None)
-    if blocked and not re.search(r"львівськ\w* політехнік\w*|\bуніверситет\w*\b|\bколедж\w*\b|\bстудент\w*\b", text):
-        logger.info(
-            "Фільтр: ВІДХИЛЕНА | причина=стороння тема | джерело=%s | заголовок=%s",
-            article.source, article.title,
-        )
-        return False
-
-    logger.info(
-        "Фільтр: ПРОЙШЛА | ознака=%s | джерело=%s | заголовок=%s",
-        matched, article.source, article.title,
-    )
-    return True
 
 def _datetime_from_struct(value: Any) -> datetime | None:
     """Перетворює feedparser time_struct на timezone-aware UTC datetime."""
@@ -527,56 +469,7 @@ def entry_publication_datetime(entry: Any) -> datetime | None:
     return parsed
 
 
-def fetch_html_source_sync(source: dict[str, Any]) -> list[Article]:
-    headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; PolitehnikMonitor/3.0; +https://t.me/)",
-        "Accept-Language": "uk-UA,uk;q=0.9,en;q=0.7",
-    }
-    response = requests.get(source["url"], headers=headers, timeout=HTTP_TIMEOUT)
-    response.raise_for_status()
-    soup = BeautifulSoup(response.text, "html.parser")
-    pattern = re.compile(source.get("link_pattern", r".*"))
-    max_items = int(source.get("max_items", 25))
-
-    links: list[tuple[str, str]] = []
-    seen_urls: set[str] = set()
-    for anchor in soup.find_all("a", href=True):
-        href = anchor.get("href", "").strip()
-        if not pattern.search(href):
-            continue
-        url = urljoin(response.url, href)
-        if url in seen_urls:
-            continue
-        title = normalize_text(anchor.get_text(" ", strip=True))
-        if len(title) < 12:
-            continue
-        seen_urls.add(url)
-        links.append((title, url))
-        if len(links) >= max_items:
-            break
-
-    articles: list[Article] = []
-    for title, url in links:
-        real_url, published_dt, page_site = inspect_article_page(url)
-        if ONLY_TODAY_NEWS and not _is_today_kyiv(published_dt):
-            continue
-        article = Article(
-            source=page_site or source["name"],
-            level=int(source["level"]),
-            title=title,
-            url=real_url,
-            summary="",
-            published=published_dt.isoformat() if published_dt else "",
-        )
-        article.score = score_article(article)
-        articles.append(article)
-    return articles
-
-
 def fetch_source_sync(source: dict[str, Any]) -> list[Article]:
-    if source.get("type", "rss") == "html":
-        return fetch_html_source_sync(source)
-
     headers = {
         "User-Agent": "Mozilla/5.0 (compatible; PolitehnikMonitor/2.0; +https://t.me/)"
     }
@@ -646,26 +539,15 @@ def clean_google_news_title(title: str) -> str:
 
 def local_prepare_post(article: Article) -> tuple[str, str]:
     title = clean_google_news_title(article.title)
-    summary = normalize_text(article.summary)
+    summary = article.summary
+    summary = re.sub(r"\s*(Читати далі|Read more).*", "", summary, flags=re.IGNORECASE)
 
-    summary = re.sub(
-        r"\s*(Читати далі|Читайте також|Детальніше|Read more).*",
-        "",
-        summary,
-        flags=re.IGNORECASE,
-    ).strip()
+    if summary and canonical_title(summary) != canonical_title(title):
+        text = summary[:1200].strip()
+    else:
+        text = "Деталі події — у першоджерелі."
 
-    if canonical_title(summary).startswith(canonical_title(title)):
-        summary = summary[len(title):].lstrip(" .:—–-")
-
-    sentences = re.split(r"(?<=[.!?])\s+", summary)
-    sentences = [sentence.strip() for sentence in sentences if len(sentence.strip()) >= 20]
-    concise = " ".join(sentences[:3]).strip()
-
-    if not concise:
-        concise = "Деталі події оприлюднено у першоджерелі."
-
-    return title[:220], concise[:900]
+    return title[:220], text
 
 
 def openai_rewrite_sync(article: Article, mode: str = "normal") -> tuple[str, str]:
@@ -683,8 +565,8 @@ def openai_rewrite_sync(article: Article, mode: str = "normal") -> tuple[str, st
 Ти редактор українського Telegram-каналу «{CHANNEL_NAME}» про освіту, науку,
 студентське життя та розвиток університетів.
 
-Підготуй стислу нейтральну новину українською мовою для освітнього каналу. Одразу подай головний факт, без води, оцінок і повторів. Не вигадуй фактів, дат, цитат,
-цифр чи посад. Якщо матеріал не стосується університетів, коледжів, студентів, МОН або Львівської політехніки, не додавай сторонніх висновків. {length_instruction}
+Підготуй нейтральну новину українською мовою. Не вигадуй фактів, дат, цитат,
+цифр чи посад. Не роби сенсаційних висновків. {length_instruction}
 Поверни ТІЛЬКИ JSON такого формату:
 {{"title":"...","text":"..."}}
 
@@ -802,20 +684,18 @@ def format_admin_preview(draft: sqlite3.Row) -> str:
 def format_channel_post(draft: sqlite3.Row) -> str:
     source_name = normalize_text(draft["source"]) or "Першоджерело"
     source_url = html.escape(draft["article_url"], quote=True)
-
-    footer = (
-        f'\n\n🎓 <a href="{html.escape(CHANNEL_URL, quote=True)}">'
-        f'Приєднатися до «{html.escape(CHANNEL_NAME)}»</a>'
-        f'  •  '
-        f'📨 <a href="https://t.me/politechnicksendnews_bot">'
-        f'Надіслати новину</a>'
-    )
+    subscribe = ""
+    if CHANNEL_URL:
+        subscribe = (
+            f'\n\n🎓 <a href="{html.escape(CHANNEL_URL, quote=True)}">'
+            f'Приєднатися до «{html.escape(CHANNEL_NAME)}»</a>'
+        )
 
     return (
         f"<b>{html.escape(draft['post_title'])}</b>\n\n"
         f"{html.escape(draft['post_text'])}\n\n"
         f'🔗 Джерело: <a href="{source_url}">{html.escape(source_name)}</a>'
-        f"{footer}"
+        f"{subscribe}"
     )
 
 def draft_keyboard(draft_id: int) -> InlineKeyboardMarkup:
@@ -873,87 +753,47 @@ async def scan_sources(application: Application, force: bool = False) -> tuple[i
     async with scan_lock:
         found = 0
         drafted = 0
-        relevant_count = 0
         first_boot = get_meta("bootstrapped", "0") != "1"
 
-        logger.info("Починаю перевірку джерел: кількість=%s, force=%s", len(SOURCES), force)
-
-        source_results = await asyncio.gather(
-            *(fetch_source(source) for source in SOURCES),
-            return_exceptions=True,
-        )
-
-        articles: list[Article] = []
-
-        for index, result in enumerate(source_results):
-            source_name = SOURCES[index].get("name", "Невідоме джерело")
-            if isinstance(result, Exception):
-                logger.error("Помилка джерела «%s»: %s", source_name, result)
-                continue
-
-            logger.info("Джерело «%s»: отримано %s актуальних матеріалів", source_name, len(result))
-            articles.extend(result)
-
-        logger.info("Усього актуальних матеріалів після фільтра дати: %s", len(articles))
+        source_results = await asyncio.gather(*(fetch_source(source) for source in SOURCES))
+        articles = [article for group in source_results for article in group]
         articles.sort(key=lambda item: (item.level, -item.score))
 
         for article in articles:
             if is_seen(article):
                 continue
-
             found += 1
+            mark_seen(article)
 
             if first_boot and BOOTSTRAP_SKIP_EXISTING and not force:
-                mark_seen(article)
                 continue
-
             if not is_relevant(article):
-                mark_seen(article)
                 continue
-
-            relevant_count += 1
-
             if drafted >= MAX_DRAFTS_PER_SCAN:
-                logger.info("Досягнуто ліміт чернеток (%s). Матеріал залишено непереглянутим: %s", MAX_DRAFTS_PER_SCAN, article.title)
                 continue
 
-            try:
-                post_title, post_text = await prepare_post(article)
-                draft_id = create_draft(article, post_title, post_text)
-                await send_draft_preview(application, draft_id)
-                mark_seen(article)
-                drafted += 1
-                logger.info("Створено чернетку №%s | %s", draft_id, article.title)
-            except TelegramError as exc:
-                logger.exception("Telegram не зміг надіслати чернетку для «%s»: %s", article.title, exc)
-            except Exception:
-                logger.exception("Не вдалося створити чернетку для «%s»", article.title)
+            post_title, post_text = await prepare_post(article)
+            draft_id = create_draft(article, post_title, post_text)
+            await send_draft_preview(application, draft_id)
+            drafted += 1
 
         if first_boot:
             set_meta("bootstrapped", "1")
-
         set_meta("last_scan", str(int(time.time())))
-        logger.info("Перевірка завершена: нових=%s, релевантних=%s, чернеток=%s", found, relevant_count, drafted)
         return found, drafted
 
 
 async def monitor_loop(application: Application) -> None:
     await asyncio.sleep(3)
-    logger.info("Автоматичний моніторинг активовано, інтервал %s секунд", CHECK_INTERVAL_SECONDS)
-
     while True:
         try:
-            if monitor_paused:
-                logger.info("Автоматичний моніторинг призупинено")
-            else:
+            if not monitor_paused:
                 found, drafted = await scan_sources(application)
-                logger.info("Автоматична перевірка: нових=%s, чернеток=%s", found, drafted)
+                logger.info("Перевірка завершена: нових=%s, чернеток=%s", found, drafted)
         except asyncio.CancelledError:
-            logger.info("Фоновий цикл моніторингу зупинено")
             raise
         except Exception:
             logger.exception("Помилка циклу моніторингу")
-
         await asyncio.sleep(CHECK_INTERVAL_SECONDS)
 
 
@@ -1181,39 +1021,82 @@ async def reply_editor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def forwarded_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """V рівень: пересланий у бот пост перетворюється на ручну чернетку."""
+    """
+    Пересланий у бот допис створює ручну чернетку БЕЗ AI-перефразування.
+
+    Оригінальний текст зберігається як є. За потреби редактор потім може
+    натиснути «Скоротити», «Розширити» або «Переписати».
+    """
     if not is_admin(update):
         return
+
     message = update.effective_message
-    if message.reply_to_message:
+    if not message or message.reply_to_message:
         return
+
     if not (message.forward_origin or message.forward_date):
         return
 
     raw_text = (message.text or message.caption or "").strip()
     if not raw_text:
-        await message.reply_text("Не вдалося отримати текст із пересланого допису.")
+        await message.reply_text(
+            "Не вдалося отримати текст із пересланого допису. "
+            "Додай підпис до фото або відео й перешли ще раз."
+        )
         return
 
-    first_line, *rest = raw_text.splitlines()
+    lines = raw_text.splitlines()
+    nonempty_indexes = [
+        index for index, line in enumerate(lines) if line.strip()
+    ]
+
+    if not nonempty_indexes:
+        await message.reply_text("У пересланому дописі немає тексту.")
+        return
+
+    first_index = nonempty_indexes[0]
+    title = lines[first_index].strip()[:220]
+
+    remaining_lines = lines[first_index + 1:]
+    post_text = "\n".join(remaining_lines).strip()
+
+    if not post_text:
+        post_text = title
+
     article = Article(
         source="Пересланий Telegram-допис",
         level=5,
-        title=first_line[:220],
+        title=title,
         url="https://t.me/",
-        summary="\n".join(rest).strip() or raw_text,
+        summary=post_text,
         published="",
     )
-    title, text = await prepare_post(article)
-    draft_id = create_draft(article, title, text)
+
+    # prepare_post() тут навмисно не викликається:
+    # переслана новина зберігається без автоматичного AI-переписування.
+    draft_id = create_draft(
+        article=article,
+        post_title=title,
+        post_text=post_text[:3000],
+    )
 
     if message.photo:
-        update_draft(draft_id, media_type="photo", media_file_id=message.photo[-1].file_id)
+        update_draft(
+            draft_id,
+            media_type="photo",
+            media_file_id=message.photo[-1].file_id,
+        )
     elif message.video:
-        update_draft(draft_id, media_type="video", media_file_id=message.video.file_id)
+        update_draft(
+            draft_id,
+            media_type="video",
+            media_file_id=message.video.file_id,
+        )
 
     await send_draft_preview(context.application, draft_id)
-    await message.reply_text(f"✅ Створено чернетку №{draft_id}.")
+    await message.reply_text(
+        f"✅ Створено чернетку №{draft_id} без автоматичного перефразування."
+    )
 
 
 def validate_config() -> list[str]:
@@ -1225,17 +1108,6 @@ def validate_config() -> list[str]:
     if not CHANNEL_ID:
         errors.append("CHANNEL_ID")
     return errors
-
-
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    error = context.error
-    if error and error.__class__.__name__ == "Conflict":
-        logger.error(
-            "Telegram Conflict: цей BOT_TOKEN використовується ще одним запущеним ботом. "
-            "Залиш лише один активний процес — Railway або локальний запуск."
-        )
-        return
-    logger.exception("Необроблена помилка Telegram", exc_info=error)
 
 
 def main() -> None:
@@ -1257,7 +1129,6 @@ def main() -> None:
     application.add_handler(CommandHandler("pause", pause_command))
     application.add_handler(CommandHandler("resume", resume_command))
     application.add_handler(CommandHandler("testpost", testpost_command))
-    application.add_error_handler(error_handler)
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(
         MessageHandler(
