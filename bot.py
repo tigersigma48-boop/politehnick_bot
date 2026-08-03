@@ -676,14 +676,13 @@ def format_admin_preview(draft: sqlite3.Row) -> str:
         f"🗞 Джерело: {html.escape(draft['source'])}{media_note}\n\n"
         f"<b>{html.escape(draft['post_title'])}</b>\n\n"
         f"{html.escape(draft['post_text'])}\n\n"
-        f"🔗 <a href=\"{html.escape(draft['article_url'])}\">Першоджерело</a>\n\n"
+        f"🗞 Джерело: {html.escape(draft['source'])}\n\n"
         f"<i>Щоб змінити текст або додати фото/відео, відповідай на це повідомлення.</i>"
     )
 
 
 def format_channel_post(draft: sqlite3.Row) -> str:
-    source_name = normalize_text(draft["source"]) or "Першоджерело"
-    source_url = html.escape(draft["article_url"], quote=True)
+    source_name = normalize_text(draft["source"]) or "Редакція «Політехніка»"
 
     footer_lines: list[str] = []
 
@@ -703,7 +702,7 @@ def format_channel_post(draft: sqlite3.Row) -> str:
     return (
         f"<b>{html.escape(draft['post_title'])}</b>\n\n"
         f"{html.escape(draft['post_text'])}\n\n"
-        f'🔗 Джерело: <a href="{source_url}">{html.escape(source_name)}</a>'
+        f'🗞 Джерело: {html.escape(source_name)}'
         f"{footer}"
     )
 
@@ -1073,7 +1072,7 @@ async def forwarded_post_handler(update: Update, context: ContextTypes.DEFAULT_T
         post_text = title
 
     article = Article(
-        source="Пересланий Telegram-допис",
+        source="Редакція «Політехніка»",
         level=5,
         title=title,
         url="https://t.me/",
