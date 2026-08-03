@@ -676,8 +676,7 @@ def format_admin_preview(draft: sqlite3.Row) -> str:
         f"🗞 Джерело: {html.escape(draft['source'])}{media_note}\n\n"
         f"<b>{html.escape(draft['post_title'])}</b>\n\n"
         f"{html.escape(draft['post_text'])}\n\n"
-        f"🗞 Джерело: {html.escape(draft['source'])}\n\n"
-        f"<i>Щоб змінити текст або додати фото/відео, відповідай на це повідомлення.</i>"
+        f"🗞 Джерело: {html.escape(draft['source'])}"
     )
 
 
