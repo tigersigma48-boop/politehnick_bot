@@ -34,19 +34,19 @@ SOURCES = [
         "name": 'ZAXID.NET',
         "level": 1,
         "type": "rss",
-        "url": google_news_rss('site:zaxid.net ("Львівська політехніка" OR освіта OR університет OR студент OR вступ)'),
+        "url": google_news_rss("site:zaxid.net when:1d"),
     },
     {
         "name": 'Твоє Місто',
         "level": 1,
         "type": "rss",
-        "url": google_news_rss('site:tvoemisto.tv ("Львівська політехніка" OR освіта OR університет OR студент OR вступ)'),
+        "url": google_news_rss("site:tvoemisto.tv when:1d"),
     },
     {
         "name": 'Дивись.info',
         "level": 1,
         "type": "rss",
-        "url": google_news_rss('site:dyvys.info ("Львівська політехніка" OR освіта OR університет OR студент OR вступ)'),
+        "url": google_news_rss("site:dyvys.info when:1d"),
     },
     {
         "name": 'LVIV.MEDIA — освіта',
@@ -179,38 +179,24 @@ SOURCES = [
         "name": "Львівський портал",
         "level": 1,
         "type": "rss",
-        "url": google_news_rss(
-            'site:portal.lviv.ua ("Львівська політехніка" OR освіта OR університет OR студент OR вступ OR ректор OR гуртожиток)'
-        ),
+        "url": google_news_rss("site:portal.lviv.ua when:1d"),
     },
     {
         "name": "Вголос",
         "level": 1,
         "type": "rss",
-        "url": google_news_rss(
-            'site:vgolos.ua ("Львівська політехніка" OR освіта OR університет OR студент OR вступ OR ректор OR гуртожиток)'
-        ),
+        "url": google_news_rss("site:vgolos.ua when:1d"),
     },
     {
         "name": "Варіанти",
         "level": 1,
         "type": "rss",
-        "url": google_news_rss(
-            'site:varianty.lviv.ua ("Львівська політехніка" OR освіта OR університет OR студент OR вступ OR ректор OR гуртожиток)'
-        ),
+        "url": google_news_rss("site:varianty.lviv.ua when:1d"),
     },
     {
         "name": "Українські Новини",
         "level": 2,
         "type": "rss",
-        "url": google_news_rss(
-            'site:ukranews.com/ua ("Львівська політехніка" OR освіта OR університет OR студент OR вступ OR НМТ OR наука)'
-        ),
-    },
-    {
-        "name": "Львівич",
-        "level": 1,
-        "type": "telegram_html",
-        "url": "https://t.me/s/lvivych_news",
+        "url": google_news_rss("site:ukranews.com when:1d"),
     },
 ]
