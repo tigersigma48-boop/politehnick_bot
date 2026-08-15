@@ -470,59 +470,7 @@ def entry_publication_datetime(entry: Any) -> datetime | None:
 
 
 
-def fetch_telegram_source_sync(source: dict[str, Any]) -> list[Article]:
-    """Читає публічну web-версію Telegram-каналу, наприклад t.me/s/lvivych_news."""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; PolitehnikMonitor/3.0; +https://t.me/)"
-    }
-    response = requests.get(source["url"], headers=headers, timeout=HTTP_TIMEOUT)
-    response.raise_for_status()
-    soup = BeautifulSoup(response.text, "html.parser")
-
-    articles: list[Article] = []
-
-    for message in soup.select(".tgme_widget_message_wrap")[-40:]:
-        text_node = message.select_one(".tgme_widget_message_text")
-        date_link = message.select_one("a.tgme_widget_message_date")
-        time_node = message.select_one("time")
-
-        if not text_node or not date_link:
-            continue
-
-        text = normalize_text(text_node.get_text(" ", strip=True))
-        url = (date_link.get("href") or "").strip()
-        if not text or not url:
-            continue
-
-        published_dt = None
-        if time_node and time_node.get("datetime"):
-            published_dt = _parse_datetime(time_node.get("datetime", ""))
-
-        if ONLY_TODAY_NEWS and not _is_today_kyiv(published_dt):
-            continue
-
-        # Першу змістовну частину повідомлення використовуємо як заголовок.
-        title = text[:220].strip()
-        summary = text[:1800].strip()
-
-        article = Article(
-            source=source["name"],
-            level=int(source["level"]),
-            title=title,
-            url=url,
-            summary=summary,
-            published=published_dt.isoformat() if published_dt else "",
-        )
-        article.score = score_article(article)
-        articles.append(article)
-
-    return articles
-
-
 def fetch_source_sync(source: dict[str, Any]) -> list[Article]:
-    if source.get("type") == "telegram_html":
-        return fetch_telegram_source_sync(source)
-
     headers = {
         "User-Agent": "Mozilla/5.0 (compatible; PolitehnikMonitor/2.0; +https://t.me/)"
     }
