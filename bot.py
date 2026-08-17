@@ -52,6 +52,8 @@ DB_PATH = BASE_DIR / os.getenv("DB_FILE", "politehnik.db")
 KYIV_TZ = ZoneInfo("Europe/Kyiv")
 ONLY_TODAY_NEWS = os.getenv("ONLY_TODAY_NEWS", "true").lower() == "true"
 HTTP_TIMEOUT = max(5, int(os.getenv("HTTP_TIMEOUT", "20")))
+SOURCE_CONCURRENCY = max(1, int(os.getenv("SOURCE_CONCURRENCY", "2")))
+SOURCE_RETRIES = max(1, int(os.getenv("SOURCE_RETRIES", "3")))
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -141,6 +143,7 @@ BLOCK_KEYWORDS = [
 monitor_task: asyncio.Task | None = None
 monitor_paused = False
 scan_lock = asyncio.Lock()
+source_semaphore = asyncio.Semaphore(SOURCE_CONCURRENCY)
 
 
 @dataclass
@@ -474,8 +477,54 @@ def fetch_source_sync(source: dict[str, Any]) -> list[Article]:
     headers = {
         "User-Agent": "Mozilla/5.0 (compatible; PolitehnikMonitor/2.0; +https://t.me/)"
     }
-    response = requests.get(source["url"], headers=headers, timeout=HTTP_TIMEOUT)
-    response.raise_for_status()
+    response = None
+    last_error: Exception | None = None
+
+    for attempt in range(1, SOURCE_RETRIES + 1):
+        try:
+            response = requests.get(
+                source["url"],
+                headers=headers,
+                timeout=HTTP_TIMEOUT,
+            )
+
+            if response.status_code in {429, 500, 502, 503, 504}:
+                if attempt < SOURCE_RETRIES:
+                    wait_seconds = 2 ** attempt
+                    logger.warning(
+                        "Тимчасова помилка %s для %s. Повтор %s/%s через %s с",
+                        response.status_code,
+                        source["name"],
+                        attempt + 1,
+                        SOURCE_RETRIES,
+                        wait_seconds,
+                    )
+                    time.sleep(wait_seconds)
+                    continue
+
+            response.raise_for_status()
+            break
+
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt >= SOURCE_RETRIES:
+                raise
+            wait_seconds = 2 ** attempt
+            logger.warning(
+                "Помилка запиту до %s: %s. Повтор %s/%s через %s с",
+                source["name"],
+                exc,
+                attempt + 1,
+                SOURCE_RETRIES,
+                wait_seconds,
+            )
+            time.sleep(wait_seconds)
+
+    if response is None:
+        if last_error:
+            raise last_error
+        return []
+
     parsed = feedparser.parse(response.content)
 
     articles: list[Article] = []
@@ -526,11 +575,15 @@ def fetch_source_sync(source: dict[str, Any]) -> list[Article]:
     return articles
 
 async def fetch_source(source: dict[str, Any]) -> list[Article]:
-    try:
-        return await asyncio.to_thread(fetch_source_sync, source)
-    except Exception as exc:
-        logger.warning("Не вдалося прочитати %s: %s", source["name"], exc)
-        return []
+    async with source_semaphore:
+        try:
+            result = await asyncio.to_thread(fetch_source_sync, source)
+            # Невелика пауза, щоб не бити по Google News десятками запитів одночасно.
+            await asyncio.sleep(0.4)
+            return result
+        except Exception as exc:
+            logger.warning("Не вдалося прочитати %s: %s", source["name"], exc)
+            return []
 
 
 def clean_google_news_title(title: str) -> str:
