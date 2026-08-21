@@ -54,7 +54,7 @@ ONLY_TODAY_NEWS = os.getenv("ONLY_TODAY_NEWS", "true").lower() == "true"
 HTTP_TIMEOUT = max(5, int(os.getenv("HTTP_TIMEOUT", "20")))
 SOURCE_CONCURRENCY = max(1, int(os.getenv("SOURCE_CONCURRENCY", "2")))
 SOURCE_RETRIES = max(1, int(os.getenv("SOURCE_RETRIES", "3")))
-DIRECT_SOURCE_SET_VERSION = "direct8-v1"
+DIRECT_SOURCE_SET_VERSION = "direct8-v2"
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -484,17 +484,68 @@ def fetch_html_source_sync(source: dict[str, Any]) -> list[Article]:
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/131.0 Safari/537.36"
+            "Chrome/131.0.0.0 Safari/537.36"
         ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "uk-UA,uk;q=0.9,en;q=0.7",
+        "Cache-Control": "no-cache",
     }
 
-    response = requests.get(source["url"], headers=headers, timeout=HTTP_TIMEOUT)
-    response.raise_for_status()
+    urls = [source["url"], *source.get("fallback_urls", [])]
+    today_token = datetime.now(KYIV_TZ).strftime("%d.%m.%Y")
+    urls = [url.replace("{date}", today_token) for url in urls]
+
+    response = None
+    last_error: Exception | None = None
+
+    for candidate_url in urls:
+        for attempt in range(1, SOURCE_RETRIES + 1):
+            try:
+                candidate_headers = dict(headers)
+                candidate_headers["Referer"] = urlparse(candidate_url)._replace(
+                    path="/", query="", fragment=""
+                ).geturl()
+
+                response = requests.get(
+                    candidate_url,
+                    headers=candidate_headers,
+                    timeout=HTTP_TIMEOUT,
+                    allow_redirects=True,
+                )
+
+                if response.status_code in {429, 500, 502, 503, 504} and attempt < SOURCE_RETRIES:
+                    wait_seconds = 2 ** attempt
+                    logger.warning(
+                        "Тимчасова помилка %s для %s. Повтор через %s с",
+                        response.status_code,
+                        source["name"],
+                        wait_seconds,
+                    )
+                    time.sleep(wait_seconds)
+                    continue
+
+                response.raise_for_status()
+                break
+
+            except requests.RequestException as exc:
+                last_error = exc
+                response = None
+                if attempt < SOURCE_RETRIES:
+                    time.sleep(2 ** attempt)
+                    continue
+                break
+
+        if response is not None and response.ok:
+            break
+
+    if response is None:
+        if last_error:
+            raise last_error
+        return []
 
     soup = BeautifulSoup(response.text, "html.parser")
     pattern = re.compile(source["link_pattern"])
-    base_host = urlparse(response.url).netloc.lower().removeprefix("www.")
+    base_host = urlparse(source["url"]).netloc.lower().removeprefix("www.")
     max_items = int(source.get("max_items", 40))
 
     articles: list[Article] = []
@@ -520,11 +571,8 @@ def fetch_html_source_sync(source: dict[str, Any]) -> list[Article]:
 
         title = normalize_text(anchor.get_text(" ", strip=True))
         if len(title) < 18:
-            # Часто перше посилання на статтю — картинка без нормального тексту.
-            # Не позначаємо URL seen, щоб наступне текстове посилання могло пройти.
             continue
 
-        # Беремо невеликий контекст картки новини як summary.
         parent_text = ""
         parent = anchor.parent
         if parent is not None:
