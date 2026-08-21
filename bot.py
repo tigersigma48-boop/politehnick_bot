@@ -52,6 +52,9 @@ DB_PATH = BASE_DIR / os.getenv("DB_FILE", "politehnik.db")
 KYIV_TZ = ZoneInfo("Europe/Kyiv")
 ONLY_TODAY_NEWS = os.getenv("ONLY_TODAY_NEWS", "true").lower() == "true"
 HTTP_TIMEOUT = max(5, int(os.getenv("HTTP_TIMEOUT", "20")))
+SOURCE_CONCURRENCY = max(1, int(os.getenv("SOURCE_CONCURRENCY", "2")))
+SOURCE_RETRIES = max(1, int(os.getenv("SOURCE_RETRIES", "3")))
+DIRECT_SOURCE_SET_VERSION = "direct8-v1"
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -141,6 +144,7 @@ BLOCK_KEYWORDS = [
 monitor_task: asyncio.Task | None = None
 monitor_paused = False
 scan_lock = asyncio.Lock()
+source_semaphore = asyncio.Semaphore(SOURCE_CONCURRENCY)
 
 
 @dataclass
@@ -470,12 +474,139 @@ def entry_publication_datetime(entry: Any) -> datetime | None:
 
 
 
+
+def fetch_html_source_sync(source: dict[str, Any]) -> list[Article]:
+    """
+    Читає список новин прямо зі сторінки конкретного медіа.
+    Google News тут не використовується.
+    """
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/131.0 Safari/537.36"
+        ),
+        "Accept-Language": "uk-UA,uk;q=0.9,en;q=0.7",
+    }
+
+    response = requests.get(source["url"], headers=headers, timeout=HTTP_TIMEOUT)
+    response.raise_for_status()
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    pattern = re.compile(source["link_pattern"])
+    base_host = urlparse(response.url).netloc.lower().removeprefix("www.")
+    max_items = int(source.get("max_items", 40))
+
+    articles: list[Article] = []
+    seen_urls: set[str] = set()
+
+    for anchor in soup.find_all("a", href=True):
+        href = (anchor.get("href") or "").strip()
+        if not href:
+            continue
+
+        url = urljoin(response.url, href)
+        parsed = urlparse(url)
+        host = parsed.netloc.lower().removeprefix("www.")
+
+        if host != base_host:
+            continue
+        if not pattern.search(parsed.path):
+            continue
+
+        clean_url = url.split("#", 1)[0]
+        if clean_url in seen_urls:
+            continue
+
+        title = normalize_text(anchor.get_text(" ", strip=True))
+        if len(title) < 18:
+            # Часто перше посилання на статтю — картинка без нормального тексту.
+            # Не позначаємо URL seen, щоб наступне текстове посилання могло пройти.
+            continue
+
+        # Беремо невеликий контекст картки новини як summary.
+        parent_text = ""
+        parent = anchor.parent
+        if parent is not None:
+            parent_text = normalize_text(parent.get_text(" ", strip=True))
+
+        summary = parent_text if len(parent_text) > len(title) else title
+        summary = summary[:1200]
+
+        article = Article(
+            source=source["name"],
+            level=int(source["level"]),
+            title=title[:300],
+            url=clean_url,
+            summary=summary,
+            published="",
+        )
+        article.score = score_article(article)
+
+        seen_urls.add(clean_url)
+        articles.append(article)
+
+        if len(articles) >= max_items:
+            break
+
+    return articles
+
+
 def fetch_source_sync(source: dict[str, Any]) -> list[Article]:
+    if source.get("type") == "html":
+        return fetch_html_source_sync(source)
+
     headers = {
         "User-Agent": "Mozilla/5.0 (compatible; PolitehnikMonitor/2.0; +https://t.me/)"
     }
-    response = requests.get(source["url"], headers=headers, timeout=HTTP_TIMEOUT)
-    response.raise_for_status()
+    response = None
+    last_error: Exception | None = None
+
+    for attempt in range(1, SOURCE_RETRIES + 1):
+        try:
+            response = requests.get(
+                source["url"],
+                headers=headers,
+                timeout=HTTP_TIMEOUT,
+            )
+
+            if response.status_code in {429, 500, 502, 503, 504}:
+                if attempt < SOURCE_RETRIES:
+                    wait_seconds = 2 ** attempt
+                    logger.warning(
+                        "Тимчасова помилка %s для %s. Повтор %s/%s через %s с",
+                        response.status_code,
+                        source["name"],
+                        attempt + 1,
+                        SOURCE_RETRIES,
+                        wait_seconds,
+                    )
+                    time.sleep(wait_seconds)
+                    continue
+
+            response.raise_for_status()
+            break
+
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt >= SOURCE_RETRIES:
+                raise
+            wait_seconds = 2 ** attempt
+            logger.warning(
+                "Помилка запиту до %s: %s. Повтор %s/%s через %s с",
+                source["name"],
+                exc,
+                attempt + 1,
+                SOURCE_RETRIES,
+                wait_seconds,
+            )
+            time.sleep(wait_seconds)
+
+    if response is None:
+        if last_error:
+            raise last_error
+        return []
+
     parsed = feedparser.parse(response.content)
 
     articles: list[Article] = []
@@ -526,11 +657,19 @@ def fetch_source_sync(source: dict[str, Any]) -> list[Article]:
     return articles
 
 async def fetch_source(source: dict[str, Any]) -> list[Article]:
-    try:
-        return await asyncio.to_thread(fetch_source_sync, source)
-    except Exception as exc:
-        logger.warning("Не вдалося прочитати %s: %s", source["name"], exc)
-        return []
+    async with source_semaphore:
+        try:
+            result = await asyncio.to_thread(fetch_source_sync, source)
+            logger.info(
+                "Джерело «%s»: отримано %s матеріалів",
+                source["name"],
+                len(result),
+            )
+            await asyncio.sleep(0.25)
+            return result
+        except Exception as exc:
+            logger.warning("Не вдалося прочитати %s: %s", source["name"], exc)
+            return []
 
 
 def clean_google_news_title(title: str) -> str:
@@ -763,9 +902,31 @@ async def scan_sources(application: Application, force: bool = False) -> tuple[i
         drafted = 0
         first_boot = get_meta("bootstrapped", "0") != "1"
 
+        logger.info(
+            "Починаю перевірку прямих джерел: кількість=%s, force=%s",
+            len(SOURCES),
+            force,
+        )
         source_results = await asyncio.gather(*(fetch_source(source) for source in SOURCES))
         articles = [article for group in source_results for article in group]
         articles.sort(key=lambda item: (item.level, -item.score))
+
+        # Після переходу з Google News на прямі сайти один раз запам'ятовуємо
+        # поточні матеріали, щоб бот не надіслав десятки старих новин.
+        if get_meta("direct_source_set_version", "") != DIRECT_SOURCE_SET_VERSION:
+            seeded = 0
+            for article in articles:
+                if not is_seen(article):
+                    mark_seen(article)
+                    seeded += 1
+            set_meta("direct_source_set_version", DIRECT_SOURCE_SET_VERSION)
+            set_meta("last_scan", str(int(time.time())))
+            logger.info(
+                "Прямі джерела ініціалізовано: запам'ятовано=%s. "
+                "Наступні нові матеріали вже підуть у фільтр.",
+                seeded,
+            )
+            return 0, 0
 
         for article in articles:
             if is_seen(article):
@@ -830,7 +991,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.effective_message.reply_text("⛔️ Цей бот приватний.")
         return
     await update.effective_message.reply_text(
-        "✅ Бот «Політехнік» працює.\n\n"
+        "✅ Бот «Політехнік» працює. Джерела читаються напряму.\n\n"
         "/check — перевірити джерела зараз\n"
         "/status — стан моніторингу\n"
         "/pause — призупинити\n"
