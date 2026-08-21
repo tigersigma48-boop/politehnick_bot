@@ -869,7 +869,7 @@ def format_admin_preview(draft: sqlite3.Row) -> str:
 
 
 def format_channel_post(draft: sqlite3.Row) -> str:
-    source_name = normalize_text(draft["source"]) or "Редакція «Політехніка»"
+    source_name = normalize_text(draft["source"]) or "Редакція «Політехнік»"
 
     footer_lines: list[str] = []
 
@@ -1281,7 +1281,7 @@ async def forwarded_post_handler(update: Update, context: ContextTypes.DEFAULT_T
         post_text = title
 
     article = Article(
-        source="Редакція «Політехніка»",
+        source="Редакція «Політехнік»",
         level=5,
         title=title,
         url="https://t.me/",
